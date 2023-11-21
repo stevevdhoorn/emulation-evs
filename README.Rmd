@@ -1,0 +1,151 @@
+---
+title: "README.Rmd"
+author: "Stephen Vander Hoorn"
+date: '2023-11-20'
+output: html_document
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Potential health benefits in Western Australia from a transition to electric vehicles and renewable energy
+
+The underlying base code used for this work was originally developed by Johnson et. al. and has been adapted here in context of running scenarios for health impact assessment. 
+
+Johnson JS, Cui Z, Lee LA, Gosling JP, Blyth AM, Carslaw KS. Evaluating uncertainty in convective cloud microphysics using statistical emulation. J Adv Model Earth Syst. 2015 Mar;7(1):162–87. 
+
+### Overview and scope of analysis presented here
+
+Analyses are presented to illustrate the use of emulation as part of an example health impact assessment (HIA). 
+
+scenario analysis for future air quality. The R code below illustrates how to fit emulators to CTM outputs and then provide predictions for selected future scenarios.
+
+The R code presented here refers to the article titled 'Potential health benefits in Western Australia from a transition to electric vehicles and renewable energy'. As the title indicates, this work was based on a case study set in southwest of Western Australia and which aims to show the utility of emulation applied to a specific policy questions involving EV adoption. The topic focusing on future air quality under hypothetical low emission scenarios, e.g. switching fossil fuel on-road diesel vehicles to electric vehicles. Emulation provides a flexible way of exploring multiple scenarios for a given policy question. 
+
+Selected analyses are presented here as follows:
+
+* Fitting an example emulator for a given a set of training data (CTM outputs)
+* Carrying out an area level scenario analysis across selected future scenarios to estimate the reduction in exhaust related PM2.5. 
+
+
+```{r setup, message = FALSE, echo=FALSE, warning=FALSE}
+### load relevant R libraries
+library(DiceKriging)
+library(sensitivity)
+library(ggplot2)
+library(cowplot)
+library(rlang)
+library(ggtext)
+library(grid)
+library(paletteer)
+library(hrbrthemes)
+library(openxlsx)
+
+# Load additional R functions
+source('./EmodFit.R')
+source('./misc functions - emulators.R')
+```
+
+### Loading training data and fitting an emulator
+
+The following code chunk shows how an emulator can be fitted to training data generated from a CTM. The result is for all GMR Perth unweighted by population. Results for sub-areas within the study area are not shown here, however, a similar process is applied to generate SA3 and SA4 (refer to main article) emulators.
+
+The "mean function" of the underlying Gaussian process is defined through the "formula" argument of the km function. Alternative options can be given to the kriging model to specify the mean function (see the R help files). The covariance structure of the Gaussian Process determines how data at one location in the parameter space informs another location in the parameter space. This is often defined such that the correlation between any two data points decreased as the distance between points increases. Thus, often the 'squared exponential' covariance structure as applied here with covtype='gaus' is a useful place to start.
+
+Variance-based Sensitivity Analysis is useful here to assess parameter variance contributions to the overall CTM output variance (i.e. $\Delta$PM2.5). We use the variance-based sensitivity analysis function "fast99()" in the R package "sensitivity" to carry out these analyses.
+
+```{r emulator, message = FALSE, echo=FALSE}
+### load training data (CTM outputs) for PM2.5 - GMR Perth (unweighted by population)
+data(res_gccwgt)
+myvar = 'pm25d_wgt'
+pm25_t = EmodFit(myvar  = 'pm25d_wgt', res = res_gccwgt, myloc = 'Greater Perth', areaType = 'GCC_NAME16', molconv = 1)
+```
+
+### Scenario analysis
+
+The following code shows how scenario analysis can be carried out using emulation. Several hypothetical scenarios are defined based on changes to the Perth on-road vehicle fleet in combination with a transition to renewable energy for electricity generation. A scenario (RAPID) is defined as vehicles transition to electric under economy-wide Net Zero emissions target by early 2040s. Initially, emissions from electricity generation are held fixed (Scenario S4) followed by RAPID in combination with 100% renewable energy for all electricity generation (Scenario S7).
+
+In practice, any combination of emission parameters for this application can be applied to study other scenarios of interest.
+
+All scenarios are compared to a base case scenario which provides predictions of PM2.5 conc in 2018 and thus calibrating the emissions inventory which was establised for 2011-12.
+
+```{r scenarios, message = FALSE, echo=FALSE}
+mypars = paste0('X', seq(8))
+# Define scenarios based on setting parameters in the emulator at selected levels
+scendat = data.frame(myscen = paste("s", seq(5), sep=""),
+                     descr = c("Baseline",
+                               "Zero exh emissions",
+                               "s2 + SWIS_mixed1",
+                               "s2 + SWIS_mixed2",
+                               "s2 + SWIS_renew"),
+                     X1 = c(0.59, 0, 0, 0, 0),
+                     X2 = c(0.59, 0, 0, 0, 0),
+                     X3 = c(0.59, 0, 0, 0, 0),
+                     X4 = c(0.59, 0, 0, 0, 0) ,
+                     X5 = c(0.59, 0, 0, 0, 0),
+                     X6 = c(0.59, 0, 0, 0, 0),
+                     X7 = c(0.75, 0.75, 0.75*1.25, 0.75*1.5, 0),
+                     X8 = c(0.75, 0.75, 1.125*1.25, 0.75*1.5, 0))
+
+#names(scendat)[3:10] = mypars
+myPred <- predict(object=pm25_t$EmModel, newdata=scendat[,mypars], type="UK", checkNames=FALSE, light.return=TRUE)
+myPred$mean[c(2,3,4,5)] - myPred$mean[1] # difference from baseline (2018)
+
+### load SA4 emulators
+data(sa4_ems)
+regs = c('Perth - Inner', 'Perth - North East', 'Perth - North West',
+         'Perth - South East', 'Perth - South West', 'Mandurah')
+area_ems = sa4_ems
+tab = localEm(areatype = 'sa4', area_ems = area_ems, scendat=scendat, regs=regs, myvar=myvar)
+tab$pop = c(170, 251, 535, 488, 403, 97)
+tab2_pm = rbind(tab, data.frame(regs = "GMR Perth",
+                             s1 = sum(tab$s1*tab$pop)/sum(tab$pop),
+                             s2 = sum(tab$s2*tab$pop)/sum(tab$pop),
+                             s3 = sum(tab$s3*tab$pop)/sum(tab$pop),
+                             s4 = sum(tab$s4*tab$pop)/sum(tab$pop),
+                             s5 = sum(tab$s5*tab$pop)/sum(tab$pop),
+                             pop = sum(tab$pop)))
+tab2_pm$s2 - tab2_pm$s1 # reduction in exhaust emissions under Scenario 4 (RAPID) with SWIS_fixed
+tab2_pm$s5 - tab2_pm$s1 # reduction in exhaust emissions under Scenario 7 (RAPID + SWIS_renew)
+tab2_pm$s5 - tab2_pm$s2 # net benefit of SWIS_renew
+
+tab2_pm$SWIS_fixed = tab2_pm$s2 - tab2_pm$s1
+tab2_pm$SWIS_renew = tab2_pm$s5 - tab2_pm$s1
+
+save(tab2_pm, file='./data/tab4_pm.RData')
+
+#########################
+## Surrounding regions ##
+#########################
+scendat = data.frame(myscen = paste("s", seq(3), sep=""),
+                     descr = c("Baseline",
+                               "SWIS_renew",
+                               "SWIS_mixed"),
+                     X1 = c(0.59, 0, 0),
+                     X2 = c(0.59, 0, 0),
+                     X3 = c(0.59, 0, 0),
+                     X4 = c(0.59, 0, 0) ,
+                     X5 = c(0.59, 0, 0),
+                     X6 = c(0.59, 0, 0),
+                     X7 = c(0.75, 0, 0.75*1.5),
+                     X8 = c(0.75, 0, 0.75*1.5))
+
+regs = c('Bunbury', 'Manjimup', 'Augusta - Margaret River - Busselton')
+### load SA4 emulators
+data(sa3_ems)
+area_ems = sa3_ems
+tab = localEm(areatype = 'sa3', area_ems = area_ems, scendat=scendat, regs=regs, myvar=myvar)
+tab$pop = c(102, 23, 51)
+tab4_pm = rbind(tab, data.frame(regs = "SA total", 
+                             s1 = sum(tab$s1*tab$pop)/sum(tab$pop),
+                             s2 = sum(tab$s2*tab$pop)/sum(tab$pop),
+                             s3 = sum(tab$s3*tab$pop)/sum(tab$pop),
+                             pop = sum(tab$pop)))
+
+tab4_pm$SWIS_fixed = tab4_pm$s2 - tab4_pm$s1
+tab4_pm$SWIS_renew = tab4_pm$s3 - tab4_pm$s1
+
+save(tab4_pm, file='./data/tab4_pm.RData')
+```
+
